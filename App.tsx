@@ -7,6 +7,7 @@ import RecordButton from './components/RecordButton';
 import ResultDisplay from './components/ResultDisplay';
 import SwapIcon from './components/icons/SwapIcon';
 import UploadIcon from './components/icons/UploadIcon';
+import StopButton from './components/StopButton';
 
 const en = {
   "appTitle": "Gemini Voice Translator",
@@ -21,6 +22,8 @@ const en = {
   "original": "Original",
   "originalWithLang": "Original ({lang})",
   "translation": "Translation",
+  "replayTranslation": "Replay translation",
+  "stopProcessing": "Stop",
   "originalPlaceholder": "Your transcribed text will appear here...",
   "translationPlaceholder": "Translated text will appear here...",
   "processing": "Processing...",
@@ -57,6 +60,8 @@ const ru = {
   "original": "Оригинал",
   "originalWithLang": "Оригинал ({lang})",
   "translation": "Перевод",
+  "replayTranslation": "Повторить озвучку",
+  "stopProcessing": "Остановить",
   "originalPlaceholder": "Ваш распознанный текст появится здесь...",
   "translationPlaceholder": "Переведенный текст появится здесь...",
   "processing": "Обработка...",
@@ -145,6 +150,7 @@ const App: React.FC = () => {
     const [targetLang, setTargetLang] = useState<string>('en-US');
     const [isRecording, setIsRecording] = useState<boolean>(false);
     const [isProcessing, setIsProcessing] = useState<boolean>(false);
+    const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
     const [originalText, setOriginalText] = useState<string>('');
     const [translatedText, setTranslatedText] = useState<string>('');
     const [detectedLanguage, setDetectedLanguage] = useState<string>('');
@@ -154,6 +160,7 @@ const App: React.FC = () => {
 
     const recognitionRef = useRef<SpeechRecognition | null>(null);
     const audioFileRef = useRef<HTMLInputElement>(null);
+    const cancelRequestRef = useRef(false);
 
     const t = useCallback((key: TranslationKey | string, params?: { [key: string]: string | number }) => {
         let text = translations[locale][key as TranslationKey] || key;
@@ -187,16 +194,42 @@ const App: React.FC = () => {
         let selectedVoice: SpeechSynthesisVoice | undefined = undefined;
 
         if (potentialVoices.length > 0) {
-            if (voiceGender !== 'auto') {
-                const genderFilteredVoices = potentialVoices.filter(v => 
-                    v.name.toLowerCase().includes(voiceGender)
-                );
-                if (genderFilteredVoices.length > 0) {
-                    selectedVoice = genderFilteredVoices[0];
-                }
-            }
-            if (!selectedVoice) {
+            if (voiceGender === 'auto') {
                 selectedVoice = potentialVoices[0];
+            } else {
+                const maleKeywords = ['male', 'man', 'мужской'];
+                const femaleKeywords = ['female', 'woman', 'женский'];
+                
+                let preferredVoices: SpeechSynthesisVoice[] = [];
+                let fallbackVoices: SpeechSynthesisVoice[] = [];
+
+                if (voiceGender === 'male') {
+                    preferredVoices = potentialVoices.filter(v =>
+                        maleKeywords.some(kw => v.name.toLowerCase().includes(kw))
+                    );
+                    if (preferredVoices.length === 0) {
+                        fallbackVoices = potentialVoices.filter(v =>
+                            !femaleKeywords.some(kw => v.name.toLowerCase().includes(kw))
+                        );
+                    }
+                } else { // voiceGender === 'female'
+                    preferredVoices = potentialVoices.filter(v =>
+                        femaleKeywords.some(kw => v.name.toLowerCase().includes(kw))
+                    );
+                    if (preferredVoices.length === 0) {
+                        fallbackVoices = potentialVoices.filter(v =>
+                            !maleKeywords.some(kw => v.name.toLowerCase().includes(kw))
+                        );
+                    }
+                }
+
+                if (preferredVoices.length > 0) {
+                    selectedVoice = preferredVoices[0];
+                } else if (fallbackVoices.length > 0) {
+                    selectedVoice = fallbackVoices[0];
+                } else {
+                    selectedVoice = potentialVoices[0];
+                }
             }
         }
         
@@ -204,10 +237,15 @@ const App: React.FC = () => {
           utterance.voice = selectedVoice;
         }
         utterance.lang = lang;
-        utterance.onend = () => setIsProcessing(false);
+        utterance.onstart = () => setIsSpeaking(true);
+        utterance.onend = () => {
+          setIsProcessing(false);
+          setIsSpeaking(false);
+        };
         utterance.onerror = () => {
             setError(t('errorSpeechSynthesis'));
             setIsProcessing(false);
+            setIsSpeaking(false);
         }
         speechSynthesis.speak(utterance);
     }, [voices, voiceGender, t]);
@@ -222,19 +260,45 @@ const App: React.FC = () => {
         setError(null);
         setTranslatedText('');
         setDetectedLanguage('');
+        cancelRequestRef.current = false;
 
         try {
             const result = await translateAndDetect(transcript, sourceLang, targetLang);
+
+            if (cancelRequestRef.current) {
+                setIsProcessing(false);
+                return;
+            }
+
             setTranslatedText(result.translatedText);
             const detectedLangInfo = LANGUAGES.find(l => l.name === result.detectedLanguage);
             const detectedLangName = detectedLangInfo ? t(`lang_${detectedLangInfo.code}` as TranslationKey) : result.detectedLanguage;
             setDetectedLanguage(detectedLangName);
             speak(result.translatedText, targetLang);
         } catch (err) {
-            setError(t('errorTranslation'));
+            if (!cancelRequestRef.current) {
+                setError(t('errorTranslation'));
+            }
             setIsProcessing(false);
         }
     }, [sourceLang, targetLang, speak, t]);
+
+    const handleReplay = useCallback(() => {
+      if (translatedText) {
+          speak(translatedText, targetLang);
+      }
+    }, [translatedText, targetLang, speak]);
+    
+    const handleStop = () => {
+        cancelRequestRef.current = true;
+        speechSynthesis.cancel();
+        if (recognitionRef.current && isRecording) {
+            recognitionRef.current.stop();
+        }
+        setIsRecording(false);
+        setIsProcessing(false);
+        setIsSpeaking(false);
+    };
 
     useEffect(() => {
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -265,7 +329,7 @@ const App: React.FC = () => {
     }, [sourceLang, t, handleTextTranslation]);
 
     const startRecording = () => {
-        if (isProcessing || isRecording || !recognitionRef.current) return;
+        if (isProcessing || isRecording || isSpeaking || !recognitionRef.current) return;
         setIsRecording(true);
         setError(null);
         setOriginalText('');
@@ -309,6 +373,7 @@ const App: React.FC = () => {
         setOriginalText('');
         setTranslatedText('');
         setDetectedLanguage('');
+        cancelRequestRef.current = false;
 
         try {
             const base64Audio = await fileToBase64(file);
@@ -325,6 +390,11 @@ const App: React.FC = () => {
                 sourceLang,
                 targetLang
             );
+            
+            if (cancelRequestRef.current) {
+                setIsProcessing(false);
+                return;
+            }
 
             setOriginalText(result.transcribedText);
             setTranslatedText(result.translatedText);
@@ -335,7 +405,9 @@ const App: React.FC = () => {
             speak(result.translatedText, targetLang);
 
         } catch (err) {
-            setError(t('errorTranslation'));
+            if (!cancelRequestRef.current) {
+                setError(t('errorTranslation'));
+            }
             setIsProcessing(false);
         } finally {
             if (event.target) event.target.value = '';
@@ -406,35 +478,41 @@ const App: React.FC = () => {
                         translatedText={translatedText}
                         detectedLanguage={detectedLanguage}
                         isProcessing={isProcessing}
+                        isSpeaking={isSpeaking}
+                        onReplay={handleReplay}
                         t={t}
                     />
                     
                     <div className="flex flex-col items-center justify-center pt-4 space-y-4">
-                         <div className="flex items-center gap-6">
-                            <RecordButton
-                                isRecording={isRecording}
-                                isProcessing={isProcessing}
-                                onMouseDown={startRecording}
-                                onMouseUp={stopRecording}
-                                onTouchStart={startRecording}
-                                onTouchEnd={stopRecording}
-                            />
-                            <button
-                                onClick={() => audioFileRef.current?.click()}
-                                disabled={isProcessing || isRecording}
-                                className="w-24 h-24 rounded-full flex items-center justify-center bg-white border-2 border-slate-300 text-slate-500 transition-all duration-200 ease-in-out shadow-sm hover:bg-slate-100 hover:border-slate-400 focus:outline-none focus:ring-4 focus:ring-slate-300/50 disabled:opacity-50 disabled:cursor-not-allowed"
-                                aria-label="Upload audio file"
-                            >
-                                <UploadIcon className="w-10 h-10" />
-                            </button>
-                            <input
-                                type="file"
-                                ref={audioFileRef}
-                                onChange={handleFileChange}
-                                className="hidden"
-                                accept="audio/*"
-                            />
-                        </div>
+                        {isProcessing || isSpeaking ? (
+                             <StopButton onClick={handleStop} aria-label={t('stopProcessing')} />
+                        ) : (
+                            <div className="flex items-center gap-6">
+                                <RecordButton
+                                    isRecording={isRecording}
+                                    isProcessing={isProcessing || isSpeaking}
+                                    onMouseDown={startRecording}
+                                    onMouseUp={stopRecording}
+                                    onTouchStart={startRecording}
+                                    onTouchEnd={stopRecording}
+                                />
+                                <button
+                                    onClick={() => audioFileRef.current?.click()}
+                                    disabled={isProcessing || isRecording || isSpeaking}
+                                    className="w-24 h-24 rounded-full flex items-center justify-center bg-white border-2 border-slate-300 text-slate-500 transition-all duration-200 ease-in-out shadow-sm hover:bg-slate-100 hover:border-slate-400 focus:outline-none focus:ring-4 focus:ring-slate-300/50 disabled:opacity-50 disabled:cursor-not-allowed"
+                                    aria-label="Upload audio file"
+                                >
+                                    <UploadIcon className="w-10 h-10" />
+                                </button>
+                                <input
+                                    type="file"
+                                    ref={audioFileRef}
+                                    onChange={handleFileChange}
+                                    className="hidden"
+                                    accept="audio/*"
+                                />
+                            </div>
+                        )}
                         {isProcessing && <p className="text-slate-500 animate-pulse">{t('processing')}</p>}
                         {error && <p className="text-red-700 font-medium mt-4 bg-red-50 border border-red-200 p-3 rounded-lg text-center">{error}</p>}
                     </div>

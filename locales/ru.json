@@ -11,6 +11,8 @@
   "original": "Оригинал",
   "originalWithLang": "Оригинал ({lang})",
   "translation": "Перевод",
+  "replayTranslation": "Повторить озвучку",
+  "stopProcessing": "Остановить",
   "originalPlaceholder": "Ваш распознанный текст появится здесь...",
   "translationPlaceholder": "Переведенный текст появится здесь...",
   "processing": "Обработка...",

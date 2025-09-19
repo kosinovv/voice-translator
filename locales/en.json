@@ -11,6 +11,8 @@
   "original": "Original",
   "originalWithLang": "Original ({lang})",
   "translation": "Translation",
+  "replayTranslation": "Replay translation",
+  "stopProcessing": "Stop",
   "originalPlaceholder": "Your transcribed text will appear here...",
   "translationPlaceholder": "Translated text will appear here...",
   "processing": "Processing...",

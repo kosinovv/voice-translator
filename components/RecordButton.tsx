@@ -18,7 +18,7 @@ const RecordButton: React.FC<RecordButtonProps> = ({
   ...props
 }) => {
   const buttonStateClasses = isProcessing
-    ? 'bg-gray-500 cursor-not-allowed'
+    ? 'bg-slate-400 cursor-not-allowed'
     : isRecording
     ? 'bg-red-600 scale-110 shadow-red-500/50'
     : 'bg-blue-600 hover:bg-blue-700';

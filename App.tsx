@@ -1,41 +1,112 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Language } from './types';
 import { LANGUAGES } from './constants';
-import { translateAndDetect } from './services/geminiService';
+import { translateAndDetect, transcribeAndTranslate } from './services/geminiService';
 import LanguageSelector from './components/LanguageSelector';
 import RecordButton from './components/RecordButton';
 import ResultDisplay from './components/ResultDisplay';
 import SwapIcon from './components/icons/SwapIcon';
+import UploadIcon from './components/icons/UploadIcon';
 
-// FIX: Add type definitions for the Web Speech API to resolve TypeScript errors.
+const en = {
+  "appTitle": "Gemini Voice Translator",
+  "interfaceLanguage": "Interface Language",
+  "from": "From",
+  "to": "To",
+  "outputVoice": "Output Voice",
+  "voiceAuto": "Auto",
+  "voiceMale": "Male",
+  "voiceFemale": "Female",
+  "autoDetect": "Auto-detect",
+  "original": "Original",
+  "originalWithLang": "Original ({lang})",
+  "translation": "Translation",
+  "originalPlaceholder": "Your transcribed text will appear here...",
+  "translationPlaceholder": "Translated text will appear here...",
+  "processing": "Processing...",
+  "errorFileTooLarge": "File is too large. Maximum size is 15MB.",
+  "errorUnsupportedBrowser": "Speech recognition is not supported in this browser.",
+  "errorSpeechRecognition": "Speech recognition error: {error}",
+  "errorTranslation": "Failed to get translation from Gemini API.",
+  "errorSpeechSynthesis": "Could not synthesize speech.",
+  "errorUnknown": "An unknown error occurred.",
+  "lang_en-US": "English",
+  "lang_es-ES": "Spanish",
+  "lang_fr-FR": "French",
+  "lang_de-DE": "German",
+  "lang_it-IT": "Italian",
+  "lang_ja-JP": "Japanese",
+  "lang_ko-KR": "Korean",
+  "lang_pt-BR": "Portuguese",
+  "lang_ru-RU": "Russian",
+  "lang_zh-CN": "Chinese (Simplified)",
+  "lang_ar-SA": "Arabic",
+  "lang_hi-IN": "Hindi"
+};
+
+const ru = {
+  "appTitle": "Голосовой переводчик Gemini",
+  "interfaceLanguage": "Язык интерфейса",
+  "from": "С языка",
+  "to": "На язык",
+  "outputVoice": "Голос озвучки",
+  "voiceAuto": "Авто",
+  "voiceMale": "Мужской",
+  "voiceFemale": "Женский",
+  "autoDetect": "Автоопределение",
+  "original": "Оригинал",
+  "originalWithLang": "Оригинал ({lang})",
+  "translation": "Перевод",
+  "originalPlaceholder": "Ваш распознанный текст появится здесь...",
+  "translationPlaceholder": "Переведенный текст появится здесь...",
+  "processing": "Обработка...",
+  "errorFileTooLarge": "Файл слишком большой. Максимальный размер 15 МБ.",
+  "errorUnsupportedBrowser": "Распознавание речи не поддерживается в этом браузере.",
+  "errorSpeechRecognition": "Ошибка распознавания речи: {error}",
+  "errorTranslation": "Не удалось получить перевод от Gemini API.",
+  "errorSpeechSynthesis": "Не удалось синтезировать речь.",
+  "errorUnknown": "Произошла неизвестная ошибка.",
+  "lang_en-US": "Английский",
+  "lang_es-ES": "Испанский",
+  "lang_fr-FR": "Французский",
+  "lang_de-DE": "Немецкий",
+  "lang_it-IT": "Итальянский",
+  "lang_ja-JP": "Японский",
+  "lang_ko-KR": "Корейский",
+  "lang_pt-BR": "Португальский",
+  "lang_ru-RU": "Русский",
+  "lang_zh-CN": "Китайский (упрощенный)",
+  "lang_ar-SA": "Арабский",
+  "lang_hi-IN": "Хинди"
+};
+
+const translations = { en, ru };
+type Locale = keyof typeof translations;
+type TranslationKey = keyof typeof en;
+
 interface SpeechRecognitionErrorEvent extends Event {
   readonly error: string;
   readonly message: string;
 }
-
 interface SpeechRecognitionAlternative {
   readonly transcript: string;
   readonly confidence: number;
 }
-
 interface SpeechRecognitionResult {
   readonly isFinal: boolean;
   readonly length: number;
   item(index: number): SpeechRecognitionAlternative;
   [index: number]: SpeechRecognitionAlternative;
 }
-
 interface SpeechRecognitionResultList {
   readonly length: number;
   item(index: number): SpeechRecognitionResult;
   [index: number]: SpeechRecognitionResult;
 }
-
 interface SpeechRecognitionEvent extends Event {
   readonly resultIndex: number;
   readonly results: SpeechRecognitionResultList;
 }
-
 interface SpeechRecognition extends EventTarget {
   continuous: boolean;
   interimResults: boolean;
@@ -46,11 +117,9 @@ interface SpeechRecognition extends EventTarget {
   start(): void;
   stop(): void;
 }
-
 interface SpeechRecognitionStatic {
   new (): SpeechRecognition;
 }
-
 declare global {
   interface Window {
     SpeechRecognition?: SpeechRecognitionStatic;
@@ -58,257 +127,321 @@ declare global {
   }
 }
 
-// Helper to get a best-guess language for speech recognition from browser settings
 const getBrowserLanguageCode = (): string => {
     if (typeof navigator === 'undefined') return 'en-US';
     const browserLang = navigator.language;
     if (!browserLang) return 'en-US';
-
-    // Check for an exact match (e.g., 'es-ES' === 'es-ES')
     const exactMatch = LANGUAGES.find(l => l.code === browserLang);
     if (exactMatch) return exactMatch.code;
-
-    // Check for a language prefix match (e.g., 'en' for 'en-GB')
     const langPrefix = browserLang.split('-')[0];
     const partialMatch = LANGUAGES.find(l => l.code.startsWith(langPrefix));
     if (partialMatch) return partialMatch.code;
-    
-    return 'en-US'; // Fallback to English
+    return 'en-US';
 };
 
-
 const App: React.FC = () => {
-  const [sourceLang, setSourceLang] = useState<string>('auto');
-  const [targetLang, setTargetLang] = useState<string>('es-ES');
-  const [isRecording, setIsRecording] = useState<boolean>(false);
-  const [isProcessing, setIsProcessing] = useState<boolean>(false);
-  const [originalText, setOriginalText] = useState<string>('');
-  const [translatedText, setTranslatedText] = useState<string>('');
-  const [detectedLanguage, setDetectedLanguage] = useState<string>('');
-  const [error, setError] = useState<string | null>(null);
-  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
-  const [voiceGender, setVoiceGender] = useState<'auto' | 'male' | 'female'>('auto');
+    const [locale, setLocale] = useState<Locale>('ru');
+    const [sourceLang, setSourceLang] = useState<string>('auto');
+    const [targetLang, setTargetLang] = useState<string>('en-US');
+    const [isRecording, setIsRecording] = useState<boolean>(false);
+    const [isProcessing, setIsProcessing] = useState<boolean>(false);
+    const [originalText, setOriginalText] = useState<string>('');
+    const [translatedText, setTranslatedText] = useState<string>('');
+    const [detectedLanguage, setDetectedLanguage] = useState<string>('');
+    const [error, setError] = useState<string | null>(null);
+    const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+    const [voiceGender, setVoiceGender] = useState<'auto' | 'male' | 'female'>('auto');
 
-  const recognitionRef = useRef<SpeechRecognition | null>(null);
+    const recognitionRef = useRef<SpeechRecognition | null>(null);
+    const audioFileRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    const loadVoices = () => setVoices(speechSynthesis.getVoices());
-    loadVoices();
-    speechSynthesis.onvoiceschanged = loadVoices;
-    
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (SpeechRecognition) {
-      const recognition = new SpeechRecognition();
-      recognition.continuous = false;
-      recognition.interimResults = false;
-      recognition.lang = sourceLang === 'auto' ? getBrowserLanguageCode() : sourceLang;
-      
-      recognition.onresult = (event) => {
-        const transcript = event.results[0][0].transcript;
-        handleTranslation(transcript);
-      };
-
-      recognition.onerror = (event) => {
-        setError(`Speech recognition error: ${event.error}`);
-        setIsProcessing(false);
-        setIsRecording(false);
-      };
-      
-      recognition.onend = () => {
-        if (isRecording) { // If it stops unexpectedly
-            setIsRecording(false);
+    const t = useCallback((key: TranslationKey | string, params?: { [key: string]: string | number }) => {
+        let text = translations[locale][key as TranslationKey] || key;
+        if (params) {
+            Object.keys(params).forEach(pKey => {
+                text = text.replace(`{${pKey}}`, String(params[pKey]));
+            });
         }
-      };
-
-      recognitionRef.current = recognition;
-    } else {
-      setError("Speech recognition is not supported in this browser.");
-    }
-
-    return () => {
-      speechSynthesis.onvoiceschanged = null;
-    };
-  }, [sourceLang, isRecording]); // Re-create if sourceLang changes
-
-  const speak = useCallback((text: string, lang: string) => {
-    if (!text || !window.speechSynthesis) {
-        setIsProcessing(false);
-        return;
-    }
+        return text;
+    }, [locale]);
     
-    speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    const targetLangShort = lang.split('-')[0];
+    useEffect(() => {
+        const loadVoices = () => setVoices(speechSynthesis.getVoices());
+        loadVoices();
+        speechSynthesis.onvoiceschanged = loadVoices;
+        return () => {
+          speechSynthesis.onvoiceschanged = null;
+        };
+    }, []);
 
-    let selectedVoice: SpeechSynthesisVoice | undefined = undefined;
+    const speak = useCallback((text: string, lang: string) => {
+        if (!text || !window.speechSynthesis) {
+            setIsProcessing(false);
+            return;
+        }
+        
+        speechSynthesis.cancel();
+        const utterance = new SpeechSynthesisUtterance(text);
+        const targetLangShort = lang.split('-')[0];
+        const potentialVoices = voices.filter(v => v.lang === lang || v.lang.startsWith(targetLangShort));
+        let selectedVoice: SpeechSynthesisVoice | undefined = undefined;
 
-    // Find all voices for the target language
-    const potentialVoices = voices.filter(v => 
-        v.lang === lang || v.lang.startsWith(targetLangShort)
-    );
-
-    if (potentialVoices.length > 0) {
-        // If a gender is specified, try to find a matching voice
-        if (voiceGender !== 'auto') {
-            const genderFilteredVoices = potentialVoices.filter(v => 
-                v.name.toLowerCase().includes(voiceGender)
-            );
-            if (genderFilteredVoices.length > 0) {
-                selectedVoice = genderFilteredVoices[0]; // Use the first match
+        if (potentialVoices.length > 0) {
+            if (voiceGender !== 'auto') {
+                const genderFilteredVoices = potentialVoices.filter(v => 
+                    v.name.toLowerCase().includes(voiceGender)
+                );
+                if (genderFilteredVoices.length > 0) {
+                    selectedVoice = genderFilteredVoices[0];
+                }
+            }
+            if (!selectedVoice) {
+                selectedVoice = potentialVoices[0];
             }
         }
         
-        // Fallback: if no gender-specific voice was found, or if set to 'auto', use the first available voice.
-        if (!selectedVoice) {
-            selectedVoice = potentialVoices[0];
+        if (selectedVoice) {
+          utterance.voice = selectedVoice;
         }
-    }
-    
-    if (selectedVoice) {
-      utterance.voice = selectedVoice;
-    }
+        utterance.lang = lang;
+        utterance.onend = () => setIsProcessing(false);
+        utterance.onerror = () => {
+            setError(t('errorSpeechSynthesis'));
+            setIsProcessing(false);
+        }
+        speechSynthesis.speak(utterance);
+    }, [voices, voiceGender, t]);
 
-    utterance.lang = lang;
-    utterance.pitch = 1;
-    utterance.rate = 1;
+    const handleTextTranslation = useCallback(async (transcript: string) => {
+        if (!transcript) {
+            setIsProcessing(false);
+            return;
+        };
+        setOriginalText(transcript);
+        setIsProcessing(true);
+        setError(null);
+        setTranslatedText('');
+        setDetectedLanguage('');
 
-    utterance.onend = () => setIsProcessing(false);
-    utterance.onerror = () => {
-        setError("Could not synthesize speech.");
-        setIsProcessing(false);
-    }
-    
-    speechSynthesis.speak(utterance);
-  }, [voices, voiceGender]);
+        try {
+            const result = await translateAndDetect(transcript, sourceLang, targetLang);
+            setTranslatedText(result.translatedText);
+            const detectedLangInfo = LANGUAGES.find(l => l.name === result.detectedLanguage);
+            const detectedLangName = detectedLangInfo ? t(`lang_${detectedLangInfo.code}` as TranslationKey) : result.detectedLanguage;
+            setDetectedLanguage(detectedLangName);
+            speak(result.translatedText, targetLang);
+        } catch (err) {
+            setError(t('errorTranslation'));
+            setIsProcessing(false);
+        }
+    }, [sourceLang, targetLang, speak, t]);
 
-  const handleTranslation = useCallback(async (transcript: string) => {
-    if (!transcript) {
-        setIsProcessing(false);
-        return;
+    useEffect(() => {
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) {
+            setError(t('errorUnsupportedBrowser'));
+            return;
+        }
+        const recognition = new SpeechRecognition();
+        recognition.continuous = false;
+        recognition.interimResults = false;
+        recognition.lang = sourceLang === 'auto' ? getBrowserLanguageCode() : sourceLang;
+        
+        recognition.onresult = (event) => {
+            const transcript = event.results[0][0].transcript;
+            if (transcript) {
+                handleTextTranslation(transcript);
+            }
+        };
+        recognition.onerror = (event) => {
+            setError(t('errorSpeechRecognition', { error: event.error }));
+            setIsProcessing(false);
+            setIsRecording(false);
+        };
+        recognition.onend = () => {
+            setIsRecording(false);
+        };
+        recognitionRef.current = recognition;
+    }, [sourceLang, t, handleTextTranslation]);
+
+    const startRecording = () => {
+        if (isProcessing || isRecording || !recognitionRef.current) return;
+        setIsRecording(true);
+        setError(null);
+        setOriginalText('');
+        setTranslatedText('');
+        setDetectedLanguage('');
+        recognitionRef.current.start();
     };
-    setOriginalText(transcript);
-    setIsProcessing(true);
-    setError(null);
-    setTranslatedText('');
-    setDetectedLanguage('');
 
-    try {
-      const result = await translateAndDetect(transcript, sourceLang, targetLang);
-      setTranslatedText(result.translatedText);
-      setDetectedLanguage(result.detectedLanguage);
-      speak(result.translatedText, targetLang);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "An unknown error occurred.");
-      setIsProcessing(false);
-    }
-  }, [sourceLang, targetLang, speak]);
+    const stopRecording = () => {
+        if (!isRecording || !recognitionRef.current) return;
+        recognitionRef.current.stop();
+    };
+    
+    const handleSwapLanguages = () => {
+        if (sourceLang === 'auto') return;
+        setSourceLang(targetLang);
+        setTargetLang(sourceLang);
+    };
 
-  const handleRecordStart = () => {
-    if (isProcessing || !recognitionRef.current) return;
-    setIsRecording(true);
-    setError(null);
-    setOriginalText('');
-    setTranslatedText('');
-    setDetectedLanguage('');
-    recognitionRef.current.start();
-  };
+    const fileToBase64 = (file: File): Promise<string> => {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.readAsDataURL(file);
+            reader.onload = () => resolve(reader.result as string);
+            reader.onerror = error => reject(error);
+        });
+    };
+    
+    const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0];
+        if (!file) return;
 
-  const handleRecordStop = () => {
-    if (recognitionRef.current && isRecording) {
-      recognitionRef.current.stop();
-      setIsRecording(false);
-      setIsProcessing(true); // Switch to processing state immediately
-    }
-  };
+        if (file.size > 15 * 1024 * 1024) { // 15 MB
+            setError(t('errorFileTooLarge'));
+            if(event.target) event.target.value = '';
+            return;
+        }
 
-  const swapLanguages = () => {
-    if (sourceLang === 'auto') return; // Cannot swap with auto-detect
-    setSourceLang(targetLang);
-    setTargetLang(sourceLang);
-  };
+        setIsProcessing(true);
+        setError(null);
+        setOriginalText('');
+        setTranslatedText('');
+        setDetectedLanguage('');
 
-  return (
-    <div className="bg-gray-900 text-white min-h-screen flex flex-col items-center p-4 font-sans">
-      <div className="w-full max-w-2xl mx-auto flex flex-col items-center gap-8 my-auto">
-        <header className="text-center">
-          <h1 className="text-4xl md:text-5xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-500">
-            Voice-to-Voice Translator
-          </h1>
-          <p className="text-gray-400 mt-2">Powered by Google Gemini</p>
-        </header>
+        try {
+            const base64Audio = await fileToBase64(file);
+            const [meta, data] = base64Audio.split(',');
 
-        <div className="w-full bg-gray-800/50 p-4 rounded-xl shadow-lg flex items-center gap-2 md:gap-4">
-          <LanguageSelector
-            id="source-lang"
-            label="From"
-            value={sourceLang}
-            onChange={(e) => setSourceLang(e.target.value)}
-            languages={LANGUAGES}
-            includeAuto
-          />
-          <button 
-            onClick={swapLanguages} 
-            disabled={sourceLang === 'auto'}
-            className="p-2 rounded-full mt-6 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            aria-label="Swap languages"
-          >
-            <SwapIcon className="w-5 h-5 text-gray-300" />
-          </button>
-          <LanguageSelector
-            id="target-lang"
-            label="To"
-            value={targetLang}
-            onChange={(e) => setTargetLang(e.target.value)}
-            languages={LANGUAGES}
-          />
-        </div>
-        
-        <ResultDisplay 
-          originalText={originalText}
-          translatedText={translatedText}
-          detectedLanguage={detectedLanguage}
-          isProcessing={isProcessing}
-        />
+            if (!meta || !data) {
+                throw new Error("Invalid file format");
+            }
+            
+            const mimeType = meta.split(';')[0].split(':')[1];
 
-        {error && <div className="bg-red-500/20 text-red-300 p-3 rounded-lg w-full max-w-2xl text-center text-sm">{error}</div>}
+            const result = await transcribeAndTranslate(
+                { data, mimeType },
+                sourceLang,
+                targetLang
+            );
 
-        <div className="flex flex-col items-center gap-6 text-center mt-auto pt-6">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-medium text-gray-400">Output Voice:</span>
-            <div className="flex items-center p-1 rounded-full bg-gray-800">
-              {(['auto', 'male', 'female'] as const).map((gender) => (
-                <button
-                  key={gender}
-                  onClick={() => setVoiceGender(gender)}
-                  className={`px-4 py-1 text-sm rounded-full transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-gray-900 ${
-                    voiceGender === gender
-                      ? 'bg-blue-600 text-white shadow-md'
-                      : 'text-gray-300 hover:bg-gray-700'
-                  }`}
-                >
-                  {gender.charAt(0).toUpperCase() + gender.slice(1)}
-                </button>
-              ))}
+            setOriginalText(result.transcribedText);
+            setTranslatedText(result.translatedText);
+            const detectedLangInfo = LANGUAGES.find(l => l.name === result.detectedLanguage);
+            const detectedLangName = detectedLangInfo ? t(`lang_${detectedLangInfo.code}` as TranslationKey) : result.detectedLanguage;
+            setDetectedLanguage(detectedLangName);
+
+            speak(result.translatedText, targetLang);
+
+        } catch (err) {
+            setError(t('errorTranslation'));
+            setIsProcessing(false);
+        } finally {
+            if (event.target) event.target.value = '';
+        }
+    };
+
+    return (
+        <div className="bg-slate-100 text-slate-800 min-h-screen flex flex-col items-center justify-center p-4 font-sans antialiased">
+            <div className="w-full max-w-3xl mx-auto bg-white rounded-2xl shadow-2xl p-6 sm:p-8 space-y-8">
+                <header className="flex flex-col sm:flex-row justify-between items-center w-full">
+                    <h1 className="text-3xl font-bold text-slate-800 mb-4 sm:mb-0">{t('appTitle')}</h1>
+                    <div className="flex items-center space-x-2">
+                        <label htmlFor="locale-selector" className="text-sm font-medium text-slate-600">{t('interfaceLanguage')}:</label>
+                        <select
+                            id="locale-selector"
+                            value={locale}
+                            onChange={(e) => setLocale(e.target.value as Locale)}
+                            className="bg-slate-100 border border-slate-300 text-slate-800 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 p-2 shadow-sm"
+                        >
+                            <option value="ru">Русский</option>
+                            <option value="en">English</option>
+                        </select>
+                    </div>
+                </header>
+
+                <main className="w-full space-y-8">
+                    <section className="space-y-4 border-b border-slate-200 pb-8">
+                        <div className="grid grid-cols-1 md:grid-cols-5 gap-4 items-end">
+                            <div className="md:col-span-2">
+                                <LanguageSelector
+                                    id="source-lang"
+                                    label={t('from')}
+                                    value={sourceLang}
+                                    onChange={(e) => setSourceLang(e.target.value)}
+                                    languages={LANGUAGES}
+                                    includeAuto={true}
+                                    t={t}
+                                />
+                            </div>
+                            <div className="flex items-center justify-center">
+                                <button onClick={handleSwapLanguages} disabled={sourceLang === 'auto'} className="p-2 rounded-full text-slate-500 hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                                    <SwapIcon className="w-6 h-6" />
+                                </button>
+                            </div>
+                            <div className="md:col-span-2">
+                                <LanguageSelector
+                                    id="target-lang"
+                                    label={t('to')}
+                                    value={targetLang}
+                                    onChange={(e) => setTargetLang(e.target.value)}
+                                    languages={LANGUAGES.filter(l => l.code !== sourceLang)}
+                                    t={t}
+                                />
+                            </div>
+                        </div>
+                        <div className="flex flex-col w-full md:max-w-xs">
+                            <label htmlFor="voice-gender" className="mb-2 text-sm font-medium text-slate-600">{t('outputVoice')}</label>
+                            <select id="voice-gender" value={voiceGender} onChange={(e) => setVoiceGender(e.target.value as 'auto' | 'male' | 'female')} className="bg-slate-50 border border-slate-300 text-slate-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5">
+                                <option value="auto">{t('voiceAuto')}</option>
+                                <option value="male">{t('voiceMale')}</option>
+                                <option value="female">{t('voiceFemale')}</option>
+                            </select>
+                        </div>
+                    </section>
+
+                    <ResultDisplay
+                        originalText={originalText}
+                        translatedText={translatedText}
+                        detectedLanguage={detectedLanguage}
+                        isProcessing={isProcessing}
+                        t={t}
+                    />
+                    
+                    <div className="flex flex-col items-center justify-center pt-4 space-y-4">
+                         <div className="flex items-center gap-6">
+                            <RecordButton
+                                isRecording={isRecording}
+                                isProcessing={isProcessing}
+                                onMouseDown={startRecording}
+                                onMouseUp={stopRecording}
+                                onTouchStart={startRecording}
+                                onTouchEnd={stopRecording}
+                            />
+                            <button
+                                onClick={() => audioFileRef.current?.click()}
+                                disabled={isProcessing || isRecording}
+                                className="w-24 h-24 rounded-full flex items-center justify-center bg-white border-2 border-slate-300 text-slate-500 transition-all duration-200 ease-in-out shadow-sm hover:bg-slate-100 hover:border-slate-400 focus:outline-none focus:ring-4 focus:ring-slate-300/50 disabled:opacity-50 disabled:cursor-not-allowed"
+                                aria-label="Upload audio file"
+                            >
+                                <UploadIcon className="w-10 h-10" />
+                            </button>
+                            <input
+                                type="file"
+                                ref={audioFileRef}
+                                onChange={handleFileChange}
+                                className="hidden"
+                                accept="audio/*"
+                            />
+                        </div>
+                        {isProcessing && <p className="text-slate-500 animate-pulse">{t('processing')}</p>}
+                        {error && <p className="text-red-700 font-medium mt-4 bg-red-50 border border-red-200 p-3 rounded-lg text-center">{error}</p>}
+                    </div>
+                </main>
             </div>
-          </div>
-        
-          <div>
-            <RecordButton 
-              isRecording={isRecording}
-              isProcessing={isProcessing}
-              onMouseDown={handleRecordStart}
-              onMouseUp={handleRecordStop}
-              onTouchStart={handleRecordStart}
-              onTouchEnd={handleRecordStop}
-            />
-            <p className="mt-4 text-gray-500 text-sm">
-              {isProcessing ? "Processing..." : isRecording ? "Recording..." : "Press and hold to speak"}
-            </p>
-          </div>
         </div>
-      </div>
-    </div>
-  );
+    );
 };
 
 export default App;

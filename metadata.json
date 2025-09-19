@@ -1,0 +1,7 @@
+{
+  "name": "Gemini Voice Translator",
+  "description": "A real-time voice translator application. Speak into your microphone, and the app will transcribe your speech, translate it to a selected language, and speak the translation aloud.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
